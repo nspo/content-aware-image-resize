@@ -5,8 +5,15 @@
 
 class SeamCarver {
 public:
-    explicit SeamCarver(const cv::Mat& _image) {
-        image = _image.clone();
+    enum class EnergyCalculationType {
+        RGB_Gradient1,
+        Gray_Gradient1
+    };
+
+    explicit SeamCarver(const cv::Mat& _image, const EnergyCalculationType _energyCalcType = EnergyCalculationType::RGB_Gradient1)
+                        :
+                        image(_image.clone()),
+                        energyCalcType(_energyCalcType) {
     }
 
     [[nodiscard]]
@@ -27,7 +34,7 @@ public:
 
         if (row == 0 || row == height() - 1 || col == 0 || col == width() - 1) {
             // border pixels have static value
-            return ENERGY_BORDER_PIXEL;
+            return maxEnergyVal();
         }
 
         if (energyCache.size() != static_cast<size_t>(width())*height()) {
@@ -43,20 +50,39 @@ public:
 
         const cv::Vec3b& rgbRowP1 = image.at<cv::Vec3b>(row + 1, col);
         const cv::Vec3b& rgbRowM1 = image.at<cv::Vec3b>(row - 1, col);
-        const int rRow = rgbRowP1[2] - rgbRowM1[2];
-        const int gRow = rgbRowP1[1] - rgbRowM1[1];
-        const int bRow = rgbRowP1[0] - rgbRowM1[0];
-        const double deltaRow2 = rRow * rRow + gRow * gRow + bRow * bRow;
 
         const cv::Vec3b& rgbColP1 = image.at<cv::Vec3b>(row, col + 1);
         const cv::Vec3b& rgbColM1 = image.at<cv::Vec3b>(row, col - 1);
-        const int rCol = rgbColP1[2] - rgbColM1[2];
-        const int gCol = rgbColP1[1] - rgbColM1[1];
-        const int bCol = rgbColP1[0] - rgbColM1[0];
-        const double deltaCol2 = rCol * rCol + gCol * gCol + bCol * bCol;
 
-        // calculate and cache end result
-        energyCache[coordinatesToId(row, col)] = std::sqrt(deltaRow2 + deltaCol2);
+        double total_energy = 0;
+
+        if (energyCalcType == EnergyCalculationType::RGB_Gradient1) {
+            const int rRow = rgbRowP1[2] - rgbRowM1[2];
+            const int gRow = rgbRowP1[1] - rgbRowM1[1];
+            const int bRow = rgbRowP1[0] - rgbRowM1[0];
+            const double deltaRow2 = rRow * rRow + gRow * gRow + bRow * bRow;
+
+            const int rCol = rgbColP1[2] - rgbColM1[2];
+            const int gCol = rgbColP1[1] - rgbColM1[1];
+            const int bCol = rgbColP1[0] - rgbColM1[0];
+            const double deltaCol2 = rCol * rCol + gCol * gCol + bCol * bCol;
+
+            total_energy = std::sqrt(deltaRow2 + deltaCol2);
+        } else {
+            // Gray_Gradient1
+            const double grayRowP1 = 0.299 * rgbRowP1[2] + 0.587 * rgbRowP1[1] + 0.114 * rgbRowP1[0];
+            const double grayRowM1 = 0.299 * rgbRowM1[2] + 0.587 * rgbRowM1[1] + 0.114 * rgbRowM1[0];
+            const double deltaRow2 = (grayRowP1 - grayRowM1)*(grayRowP1 - grayRowM1);
+
+            const double grayColP1 = 0.299 * rgbColP1[2] + 0.587 * rgbColP1[1] + 0.114 * rgbColP1[0];
+            const double grayColM1 = 0.299 * rgbColM1[2] + 0.587 * rgbColM1[1] + 0.114 * rgbColM1[0];
+            const double deltaCol2 = (grayColP1 - grayColM1)*(grayColP1 - grayColM1);
+
+            total_energy = std::sqrt(deltaRow2 + deltaCol2);
+        }
+
+        // cache end result
+        energyCache[coordinatesToId(row, col)] = total_energy;
         return energyCache[coordinatesToId(row, col)];
     }
 
@@ -162,9 +188,9 @@ public:
         return colCoordinates;
     }
 
-    // return copy of picture where both seams are marked red
-    cv::Mat pictureWithMarkedSeams(const std::vector<int>& horizSeam,
-                                   const std::vector<int>& vertSeam) {
+    // return copy of image where both seams are marked red
+    cv::Mat imageWithMarkedSeams(const std::vector<int>& horizSeam,
+                                 const std::vector<int>& vertSeam) {
         if (!validHorizontalSeam(horizSeam)) {
             throw std::invalid_argument("Invalid horizontal seam");
         }
@@ -191,6 +217,20 @@ public:
         }
 
         return copiedImg;
+    }
+
+    // return energy image where brightness values correspond to calculated energy of the pixel in original image
+    [[nodiscard]]
+    cv::Mat energyImage() {
+        cv::Mat newImage(image.rows, image.cols, CV_64FC1);
+
+        for (int col=0; col<image.cols; ++col) {
+            for (int row=0; row<image.rows; ++row) {
+                const double energyVal = energy(row, col)/maxEnergyVal();
+                newImage.at<double>(row, col) = energyVal;
+            }
+        }
+        return newImage;
     }
 
     void removeHorizontalSeam(const std::vector<int>& horizontalSeam) {
@@ -238,8 +278,19 @@ public:
 
 private:
     cv::Mat image;
+    const EnergyCalculationType energyCalcType;
     std::vector<double> energyCache; // cache for energy values
-    static constexpr double ENERGY_BORDER_PIXEL = 1000;
+
+    [[nodiscard]]
+    double maxEnergyVal() const {
+        if (energyCalcType == EnergyCalculationType::RGB_Gradient1) {
+            return 624.6198844097104;
+        } else if (energyCalcType == EnergyCalculationType::Gray_Gradient1) {
+            return 360.62445840513925;//std::sqrt(std::pow(255.0, 2) + std::pow(255.0, 2));
+        } else {
+            return 1000;
+        }
+    }
 
     [[nodiscard]]
     int coordinatesToId(int row, int col) const {

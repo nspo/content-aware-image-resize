@@ -1,43 +1,48 @@
 #include <iostream>
 #include <opencv2/opencv.hpp>
 #include "seam_carver.h"
+#include "argagg.h"
 
 void sample_run(const cv::Mat& img);
 
-void print_usage(char* argv[]) {
-    std::cerr<<"Usage: "<<argv[0]<<" [-s] IMAGE_FILENAME\n";
-}
-
 int main(int argc, char* argv[]) {
     // Parse arguments
-    if (argc < 2 || argc > 3) {
-        print_usage(argv);
-        return 1;
+    argagg::parser argparser {{
+                           {"help", {"-h", "--help"}, "Show this help message", 0},
+                                     {"energy_type", {"-t", "--energy-type"}, "Energy calculation type (0 or 1)", 1},
+                                     {"energy_image", {"-e", "--energy-image"}, "Only show energy image", 0},
+                                     {"sample_run", {"-s", "--sample-run"}, "Only do sample run", 0}
+                             }};
+    argagg::parser_results args;
+    try {
+        args = argparser.parse(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << '\n';
+        return EXIT_FAILURE;
     }
 
-    bool only_sample_run = false;
-    const char* image_filename;
-    if (argc == 3) {
-        if (strcmp(argv[1], "-s") == 0) {
-            only_sample_run = true;
-            image_filename = argv[2];
-        } else {
-            print_usage(argv);
-            return 1;
-        }
-    } else {
-        // argc == 2
-        image_filename = argv[1];
+    if (args["help"] || args.pos.size() != 1 ||
+        (args["energy_type"] && (args["energy_type"].as<int>() < 0 || args["energy_type"].as<int>() > 1))) {
+        std::cerr << "Usage: "<<argv[0]<<" [options] IMAGE_FILENAME\n" << argparser;
+        return EXIT_SUCCESS;
     }
+
+    const SeamCarver::EnergyCalculationType energyCalcType =
+            !args["energy_type"] || args["energy_type"].as<int>() == 0
+            ? SeamCarver::EnergyCalculationType::RGB_Gradient1
+            : SeamCarver::EnergyCalculationType::Gray_Gradient1;
+
+    const char* image_filename = args.as<const char*>(0);
 
     cv::Mat img = cv::imread(image_filename, cv::IMREAD_COLOR);
     if (img.empty()) {
         std::cerr<<"Error opening image file '"<<image_filename<<"'\n";
         return 1;
     }
+    std::cout<<"Opened image file "<<image_filename<<"\n";
 
     // Sample run
-    if (only_sample_run) {
+    if (args["sample_run"]) {
         sample_run(img);
         return 0;
     }
@@ -46,7 +51,13 @@ int main(int argc, char* argv[]) {
     cv::namedWindow(image_filename, cv::WINDOW_NORMAL);
     cv::resizeWindow(image_filename, 800, 800);
 
-    SeamCarver sc(img);
+    SeamCarver sc(img, energyCalcType);
+
+    if (args["energy_image"]) {
+        cv::imshow(image_filename, sc.energyImage());
+        cv::waitKey(0);
+        return 0;
+    }
 
     bool markSeamRed = true;
     while (sc.getImage().rows > 1 && sc.getImage().cols > 1) {
@@ -54,7 +65,7 @@ int main(int argc, char* argv[]) {
         const auto verticalSeam = sc.findVerticalSeam();
 
         cv::imshow(image_filename,
-                   markSeamRed ? sc.pictureWithMarkedSeams(horizontalSeam, verticalSeam) : sc.getImage());
+                   markSeamRed ? sc.imageWithMarkedSeams(horizontalSeam, verticalSeam) : sc.getImage());
         const int key = cv::waitKey(0);
         if (key == 82 || key == 84) {
             // up / down
